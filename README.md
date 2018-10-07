@@ -1,2 +1,0 @@
-# glinscott.github.io
-Website
