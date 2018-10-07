@@ -1,0 +1,155 @@
+                **Personal Projects**
+                Gary Linscott - glinscott@gmail.com
+
+LCZero (2017)
+=============
+Modern chess AI, through extensive and systematic testing on top of the
+alpha-beta framework has become incredibly strong (see the Fishtest section).
+[AlphaZero](https://arxiv.org/abs/1712.01815) turned it all on it's head,
+showing that deep nets, learning purely from self-play could challenge the best
+of the old world, and using a completely different type of search as well
+(MCTS).
+
+[LCZero](http://lczero.org) started life as a fork of
+[LeelaZero](https://github.com/gcp/leela-zero), hence the name, Leela Chess
+Zero.  There is a fantastic community that has taken the project on, and is
+running it now at https://github.com/LeelaChessZero/lczero.
+
+The major problem with the AlphaZero approach is it requires a truly huge
+amount of compute to train the engine.  This required a distributed, volunteer
+based project - similar to Fishtest.  As of this writing in Oct. 2018, it's
+getting close to the strength of top engines, which is pretty amazing.  176
+users in the last day have played 973932 training games!
+
+![LCZero training progress](lczero.png)
+
+Porting the engine to Chess was interesting, mostly around getting the custom
+OpenCL kernels working well.  The server and client are written in Go, and
+communicate via HTTP, which I felt worked very well, especially the ability to
+cross-compile to any OS very easily.  The server is backed with Postgres, which
+also has worked well -- except when I was storing the PGN data in the game
+results table.  That turned out to be a disaster, overwhelming Postgres, and
+requiring some major database surgery.  The training pipeline is all in python
+and Tensorflow.
+
+Fishtest (2013)
+===============
+[Fishtest](https://github.com/glinscott/fishtest)
+(http://tests.stockfishchess.org/tests) is a distributed testing environment
+for [Stockfish](https://github.com/official-stockfish/stockfish) - the
+strongest[^1] chess engine in the world.  Fishtest has enabled
+Stockfish to become the strongest, and remain the strongest.  It proved that
+scientific testing leads to continuous improvement.
+
+I started Fishtest because I hated babysitting my tests when trying out engine
+improvements.  A common theme was having five ideas, but only the machine
+resources to test one.  Fishtest hands out the tasks to a network of volunteer
+machines.  It uses the
+[SPRT](https://en.wikipedia.org/wiki/Sequential_probability_ratio_test)
+algorithm to make a statistically optimal choice about how many games to play
+before making a pass or fail decision.
+
+Fishtest ended up being way more successful than I thought it would be.
+There is a vibrant community, with hundreds of different authors contributing
+patches to be tested, thousands of volunteers donating CPU time, and dedicated
+maintainers improving Fishtest itself.
+
+Fishtest introduced wide-scale distributed testing to Chess engine development,
+and made being open-source a huge advantage.  When your program is open-source,
+you can easily distribute all your testing ideas out amongst volunteers.  The
+commercial engines had to limit the distribution of the tests, usually to their
+local cluster.  As a result, Stockfish has become the best overall engine by a
+significant margin, and shows no signs of slowing down.  The image below, from
+[NCM](https://nextchessmove.com/dev-builds)[^2] shows progress in ELO, which is a
+logarthmic scale!
+
+![SF ELO Chart](sf_rating.png)
+
+The core architecture is a server running python, backed by MongoDb.  MongoDb
+has actually been very solid for Fishtest, not being the source of any major
+issues.  The client is in python, and has some nifty tricks for self-updating.
+
+[^1]: [CCRL](http://www.computerchess.org.uk/ccrl/404/),
+[IPON](http://www.inwoba.de/), [FastGM](http://www.fastgm.de/)
+[^2]: https://www.sp-cc.de/ does a fantastic job testing SF as well.
+
+GarboChess.js (2011)
+====================
+https://github.com/glinscott/Garbochess-JS
+
+GarboChess.js was the first strong Javascript chess engine.  It's a basic
+mailbox representation, with a very minimal evaluation.  I optimized it for
+speed on the Javascript engines of the day, and it was able to search a high
+enough nodes per second to be stronger than most humans.
+
+ThinkGo (2010)
+==============
+https://github.com/glinscott/thinkgo
+
+ThinkGo was a Windows Phone application to play Go.  It uses MCTS with rollouts
+for the AI, but the phones were not powerful enough to really pose a challenge.
+
+![ThinkGo](thinkgo1.jpg width="200px")
+![ThinkGo](thinkgo2.png width="200px")
+![ThinkGo](thinkgo3.jpg width="200px")
+
+GarboChess (2008)
+=============
+https://github.com/glinscott/Garbochess-3
+
+GarboChess was my first real chess AI.  Eventually I got to the point where
+improving it required systematic testing.  That's when I stopped and wrote
+Fishtest and switched to working on Stockfish :).
+
+SnezziDS (2006)
+===============
+A SNES emulator running on the Nintendo DS at full speed, with sound (but
+relatively poor compatibility).  I ported the SNES core from SnezziBoy, which
+was a GBA SNES emulator, and made some improvements to use the more powerful DS
+hardware, including my PocketSPC core for playing music.  The source may be
+lost though, since bountysource went down.
+
+![SnezziDs playing Super Metroid](https://www.youtube.com/watch?v=V8L7CyUmfiY)
+
+GarboDev (2005)
+===============
+A GBA emulator in C#.  Excellent compatibility, ran full speed on an Athlon
+3200, with sound, and has a nice built in debugger.
+
+![Zelda](gbaemu1.jpg) ![MarioKart](gbaemu2.jpg)
+
+PocketSPC (2005)
+================
+An SPC (SNES APU - the chip that played music for the SNES) emulator for the
+Nintendo DS with excellent compatibility.  Ended up being used by all the main
+SNES emulators for the DS, SnesDS, SnezziDS and SnemulDs.  It could also play
+the music from the games without running the game itself, due to the way the SNES
+was architected.
+
+The Nintendo DS actually had two CPUs, an ARM9 and ARM7 core, PocketSPC was capable
+of just running on the ARM7 core, leaving the ARM9 for the main CPU.
+
+The SNES APU was a remarkable chip, haivng 8 voice 16 bit sample playback, with
+filtering when PCs were still dealing with a 1 bit speaker.  If you are
+interested, I highly recommend reading through the extremely detailed
+[documentation](https://github.com/gilligan/snesdev/blob/master/docs/fullsnes.txt#L1453)
+by Nocash, a famous emulation developer.
+
+Asheron's Call Plugins (2003)
+=============================
+[Asheron's Call](https://en.wikipedia.org/wiki/Asheron%27s_Call) was one of the
+original MMOs.  It had an amazing third party plugin system called Decal, and I
+wrote two plugins, one a connector to Winamp, the other a tool to calculate
+which items would be mostly likely to drop if you died (a familiar issue for
+those that played Asheron's call was losing your best items, and then being
+unable to recover them because the enemies were too strong without your good
+equipment).
+
+![](dip1.jpg)
+
+<!-- Markdeep: -->
+<style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style>
+<script>window.markdeepOptions = {tocStyle: 'short'};</script>
+<script src="markdeep.min.js"></script>
+<script src="https://casual-effects.com/markdeep/latest/markdeep.min.js"></script>
+<script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>
