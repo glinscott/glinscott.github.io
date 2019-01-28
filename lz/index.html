@@ -12,7 +12,7 @@ https://github.com/glinscott/linzip2.
 Overview
 ========
 
-LZ compression has been around for a long time, but there are still large
+LZ compression has been around for a long time, but there are still major
 improvements being made. The [deflate](https://en.wikipedia.org/wiki/DEFLATE)
 algorithm is perhaps the most widely used, implemented initially in
 [PKZIP](https://en.wikipedia.org/wiki/PKZIP), and these days finding broad
@@ -21,7 +21,7 @@ much more powerful, and use a wide array of new tricks.  Two examples of the
 next generation are [zstd](https://github.com/facebook/zstd) and
 [lzma](https://en.wikipedia.org/wiki/Lempel%E2%80%93Ziv%E2%80%93Markov_chain_algorithm).
 For a comprehensive overview of open source LZ compressors, check out
-https://github.com/inikep/lzbench.
+[lzbench](https://github.com/inikep/lzbench).
 
 The core of the algorithm is fairly simple. For each character, look backwards
 in the data stream to find matches. If there is a match, then encode the
@@ -184,9 +184,9 @@ Huffman coding
 ==============
 
 The core idea behind any entropy coder is to encode frequently used symbols
-using fewer bits. Huffman codes are prefix codes, where for each bit you read,
-you can uniquely determine whether you need to keep reading another bit, or you
-are done and have read in your symbol. The
+using fewer bits.  Huffman codes are in a class called prefix codes.  When
+reading a prefix code, after each bit, you can determine whether you need to
+keep reading another bit, or you are done. The
 [wikipedia](https://en.wikipedia.org/wiki/Huffman_coding) page covers the
 algorithm very well with some nice examples.
 
@@ -274,7 +274,7 @@ void HuffmanEncoder::encode(int symbol) {
 ### Structure of the tree
 
 To build that efficient table requires constructing the Huffman tree, let's dig
-into that.  We will use a simple struct for the tree nodes, and then an array
+into that.  We will use a simple `struct` for the tree nodes, and then an array
 to hold the tree in, as well as all the symbols.  We'll limit ourselves to a
 maximum of 256 symbols, so we need up to 512 total nodes for our tree.
 
@@ -374,7 +374,7 @@ iteration, we know that it will take us exactly `num_symbols - 1` iterations.
    using a `std::vector` for storage, and we'd like to avoid any heap
    allocations.  I benchmarked the `std::make_heap` approach as just slightly faster.
 
-At the end of this loop, we've got one node sitting in `q[0]` - the root of the tree.
+At the end of this loop, we've got one node sitting in `q[0]` -- the root of the tree.
 
 ### Mark leaf depth
 ~~~ c++
@@ -748,9 +748,13 @@ Encoded 100000000 into 36691606 bytes
 
 This is almost the same compression rate as gzip, compresses a little faster,
 and decompresses a little slower.  However, there are plenty of speed and
-compression rate improvements to make - those will come later, the initial
+compression rate improvements to make -- those will come later, the initial
 version is meant to be as simple as possible while still achieving good
-results.  The entire thing is less than 1000 lines as well!
+results.
+
+As a comparison, zstd on it's best compression level, 19, gets down to 27102468
+bytes!  It takes about a minute at that level though.  On level 9, it gets
+31834632 bytes in only five seconds.
 
 Structure
 ---------
@@ -758,10 +762,10 @@ Structure
 The structure most-modern LZ encoders use is to write a sequence of commands,
 structured as `(literal count, match length, match offset)`. This allows us to
 avoid any special flags to determine if we are decoding a literal or a match.
-It's not a hard rule though, super fast compressors like lz4, which don't use
-huffman for the matches make a different choice for speed.
+It's not a hard rule though.  Super-fast compressors like lz4, which don't use
+Huffman for the matches, make a different choice for speed.
 
-For our goal of a high compression LZ variant, we will want to huffman code our
+For our goal of a high compression LZ variant, we will want to Huffman code our
 symbols (zstd actually uses FSE, a variant of arithmetic coding to do this, but
 we will cover that in a future post).
 
@@ -777,7 +781,7 @@ Encoded as:
 (literal_count:1, match_length:0, match_offset:0)
 ~~~
 
-This is interesting - we got a match longer than the history! In a bit of
+This is interesting -- we got a match longer than the history! In a bit of
 algorithmic magic, LZ encoders can represent runs of the same pattern using a
 match. This is like getting a more advanced run-length encoder for free! It
 simply encodes a match past the length of the pattern. Let's run the decoder
@@ -800,12 +804,12 @@ Matches
 Representing the symbols is pretty easy, they are just the byte value.
 Representing the matches is actually a little tricky though. If we allow large
 match lengths and offsets, they can take up a lot of bits, which means our
-huffman table gets prohibitively large. Older compression schemes like gzip
+Huffman table gets prohibitively large. Older compression schemes like gzip
 dodged this by limiting the offset to 32k. Modern schemes employ a very smart
 trick here.
 
 We will split the value into two parts. First, we pick some logarithmic
-function, and use that as our symbol to huffman code. A simple example is just
+function, and use that as our symbol to Huffman code. A simple example is just
 $2^i$. So a match length of 4 would be encoded as i=2, and match of 256 would
 be i=8. What about a non-power of two though? Here comes the magic - we encode
 the distance from the base using the minimal number of bits (eg. for a value of
@@ -813,7 +817,7 @@ the distance from the base using the minimal number of bits (eg. for a value of
 exponent), and directly write those to our output bitstream. This allows us to
 represent almost arbitrarily large matches/offsets, while bucketing things
 enough for Huffman to compress really well.  This also is the reason why we only
-need 32 symbols for most of our Huffman tables, $2^32$ allows us to represent
+need 32 symbols for most of our Huffman tables, $2^{32}$ allows us to represent
 offsets and lengths of up to 4 billion!
 
 Let's work through a few examples:
@@ -862,7 +866,7 @@ int log2(int v) {
 }
 ~~~
 
-Then, to actually write out the values, we huffman code the
+Then, to actually write out the values, we Huffman code the
 `literalLengthCode`, and then write out the offset bits directly into the
 bitstream, as mentioned above.
 ~~~ c++
@@ -907,10 +911,10 @@ needs to do.
    - [More on LZ String Matching](http://cbloomrants.blogspot.com/2011/09/09-25-11-more-on-lz-string-matching.html)
    - [String Match Results Part 5](http://cbloomrants.blogspot.com/2011/09/09-30-11-string-match-results-part-5.html)
 
-Hash-Chain builds a linked-list for all the matches that match a given hash
-value.  It does so in a very efficient way, no memory allocation required, and
-very low overhead per node.  The hash value is just the first three bytes of
-the byte stream we are at.
+Hash-Chain builds a linked-list for equivalent matches.  It does so in a very
+efficient way, with no memory allocation required, and very low overhead per
+node.  It uses the hash value as the lookup into the linked list.  The hash
+value is just the first three bytes of the match.
 
 To build those linked lists, we will keep two arrays `ht_`, which has pointers
 to the head of the list for a given hash value, and `chain_`, which contains
@@ -1028,7 +1032,7 @@ int matchLength(uint8_t* src, uint8_t* match, uint8_t* end) {
 This is where compressors differentiate themselves.  The naive approach is to
 pick the longest match possible at any position.  This worked well for older LZ
 schemes, but modern approaches (like ours) Huffman code the match lengths and
-offsets.  When we do this, the optimization problem is harder - we want to
+offsets.  When we do this, the optimization problem is harder -- we want to
 minimize the size of the code stream after Huffman compression, so picking a
 shorter match might be better because it's a more common value, leading to a
 lower size file!  This makes finding the optimal match a much harder problem.
@@ -1223,11 +1227,11 @@ Decoding the sequences is also very straightforward:
 Summary
 =======
 
-The code at https://github.com/glinscott/linzip2/blob/master/main.cc implements
-the ideas covered in this article.  It's less than 1000 lines of code, and I
-tried to find a good balance between speed and clarity.  We  left off before
-implementing LZ Optimal Parsing, which will make a huge difference in compression
-ratio, but that is for another day.
+The [code]](https://github.com/glinscott/linzip2/blob/master/main.cc)
+implements the ideas covered in this article.  It's less than 1000 lines of
+code, and I tried to find a good balance between speed and clarity.  We  left
+off before implementing LZ Optimal Parsing, which will make a huge difference
+in compression ratio, but that is for another day.
 
 Huge thanks to folks like Charles Bloom, Yann Collet and Fabien Giesen for
 posting their work online.  Without their contributions, the field of
