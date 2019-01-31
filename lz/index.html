@@ -6,8 +6,9 @@ amazing how rich and deep the compression field is.  If you enjoy algorithms
 and data structures, there are not too many better places to play.  I hope you
 enjoy reading it as much as I enjoyed writing it!
 
-You can find the source for the article at
-https://github.com/glinscott/linzip2.
+By the end, we will have a compressor that can beat gzip while decompressing at
+almost the same speed -- in less than 1000 lines.  You can find the source for
+the article at https://github.com/glinscott/linzip2.
 
 Overview
 ========
@@ -741,9 +742,13 @@ we are finally ready to start actually building our actual LZ compressor.
 
 A sneak peak of the results for our initial version:
 ~~~ none
-Encoded 100000000 into 36691606 bytes
-3.85 seconds, 24.75 MB/s
-0.56 seconds, 171.50 MB/s
+Ours: 100000000 -> 36691606 (36.6%)
+3.84 seconds, 24.82 MB/s
+0.54 seconds, 177.56 MB/s
+
+gzip: 100000000 -> 36548940 (36.5%)
+4.82s compression
+0.46s decompression
 ~~~
 
 This is almost the same compression rate as gzip, compresses a little faster,
@@ -752,9 +757,9 @@ compression rate improvements to make -- those will come later, the initial
 version is meant to be as simple as possible while still achieving good
 results.
 
-As a comparison, zstd on it's best compression level, 19, gets down to 27102468
-bytes!  It takes about a minute at that level though.  On level 9, it gets
-31834632 bytes in only five seconds.
+As a comparison, zstd on it's best compression level, 19, gets down to 27.1%!
+It takes about a minute at that level though.  On level 9, it gets 31.8% in
+only five seconds.
 
 Structure
 ---------
@@ -829,9 +834,10 @@ Value | Base     | Symbol  | Distance
 32    | $2^5=32$ | 5       | 0
 63    | $2^5=32$ | 5       | 31
 
-There is an easy win here though.  Small lengths and offsets are much more
-common than large ones, and so we will only start using our $2^i$ encoding when
-the value is greater than 15.  It's almost a 1% compression win:
+There is an easy win here though.  Small lengths are much more common than
+large ones, and so we will only start using our $2^i$ encoding when the value
+is greater than 15.  Offsets are usually quite large, so we won't use this
+special case.  It's almost a 1% compression win vs just straight log2:
 ~~~ none
 before: 37003504
 after:  36691606
@@ -839,18 +845,26 @@ after:  36691606
 
 Here is the code for encoding values:
 ~~~ c++
-int literalLengthCode(int literal_length) {
-  if (literal_length <= 15) {
-    return literal_length;
+int lengthCode(int length) {
+  if (length <= 15) {
+    return length;
   }
-  return 12 + log2(literal_length);
+  return 12 + log2(length);
 }
 
-int literalLengthExtra(int literal_length) {
-  if (literal_length <= 15) {
-    return 0;
+int lengthExtra(int length) {
+  return length - (1 << log2(length));
+}
+
+int offsetCode(int offset) {
+  if (offset < 2) {
+    return offset;
   }
-  return literal_length - (1 << log2(literal_length));
+  return 1 + log2(offset);
+}
+
+int offsetExtra(int offset) {
+  return offset - (1 << log2(offset));
 }
 ~~~
 
@@ -866,22 +880,25 @@ int log2(int v) {
 }
 ~~~
 
-Then, to actually write out the values, we Huffman code the
-`literalLengthCode`, and then write out the offset bits directly into the
-bitstream, as mentioned above.
+Then, to actually write out the values, we Huffman the length and offset codes,
+and then write out the offset bits directly into the bitstream, as mentioned
+above.
 ~~~ c++
-int64_t LzEncoder::writeValues(uint8_t* out, const std::vector<int>& values) {
+template< bool is_offset >
+int64_t LzEncoder::writeValues(uint8_t* out, const int* values) {
   HuffmanEncoder encoder(out, 32);
-  for (int v : values) {
-    encoder.scan(literalLengthCode(v));
+  for (int i = 0; i < num_seq_; ++i) {
+    encoder.scan(is_offset ? offsetCode(values[i]) : lengthCode(values[i]));
   }
   encoder.buildTable();
-  for (int v : values) {
-    encoder.encode(literalLengthCode(v));
+  for (int i = 0; i < num_seq_; ++i) {
+    int v = values[i];
+    encoder.encode(is_offset ? offsetCode(v) : lengthCode(v));
     LOGV(3, "Encoding %d -> %d (%d, %d)\n",
-         v, literalLengthCode(v), log2(v), literalLengthExtra(v));
-    if (v >= 16) {
-      int extra = literalLengthExtra(v);
+         v, is_offset ? offsetCode(v) : lengthCode(v), log2(v),
+         is_offset ? offsetExtra(v) : lengthExtra(v));
+    if (v >= (is_offset ? 2 : 16)) {
+      int extra = is_offset ? offsetExtra(v) : lengthExtra(v);
       encoder.writer().writeBits(extra, log2(v));
     }
   }
@@ -1040,6 +1057,72 @@ lower size file!  This makes finding the optimal match a much harder problem.
 For now, we will just pick the longest match that we find within our window.
 Definitely not optimal, but it gets us started!
 
+~~~ c++
+void LzEncoder::fastParse(uint8_t* buffer, int64_t p, int64_t p_end) {
+  const int kMinMatchLen = 5;
+  int num_literals = 0;
+
+  for (int64_t i = p; i < p_end; ++i) {
+    // Output a match?  Or a literal?
+    int64_t match_pos;
+    int match_len = matcher_.findMatch(buffer, buffer + p_end, i, match_pos);
+    if (match_len >= kMinMatchLen && i < p_end - 4) {
+      match_offsets_[num_seq_] = i - match_pos;
+      match_lengths_[num_seq_] = match_len;
+      literal_lengths_[num_seq_] = num_literals;
+      ++num_seq_;
+      num_literals = 0;
+
+      while (--match_len > 0) {
+        matcher_.insert(buffer, ++i);
+      }
+    } else {
+      literals_[num_lit_++] = buffer[i];
+      ++num_literals;
+    }
+  }
+  if (num_literals != 0) {
+    literal_lengths_[num_seq_] = num_literals;
+    match_offsets_[num_seq_] = 0;
+    match_lengths_[num_seq_] = 0;
+    ++num_seq_;
+  }
+}
+~~~
+Here is the fast method of building the sequences.  For each byte in the input,
+we check if we have a match.  If there is one, we use it, otherwise we add a
+literal to our buffer.  That's it!  One important part is making sure we insert
+the match substrings into the Hash-Chain, otherwise we lose a lot of potential
+matching opportunities.
+
+A tiny optimization is restricing the minimum length of a match to 5.
+
+## Optimal Parsing
+
+We will do a minimal implementation of an optimal parse, based on a description
+from [Bulat Ziganshin](https://encode.ru/threads/1895-LZ-Optimal-parsing).
+
+1. Walk forward, and for each byte, compute the cost to encode a literal, or
+   one of the possible matches, and write it into the cost array.
+2. Walk backward, picking the best option at each step.
+
+Computing the cost of encoding a literal is not easy - we need to know how many
+bits each symbol is going to be after Huffman coding.  Unfortunately, that is
+affected by all the other choices we make.  There are a variety of approaches
+to try and deal with this, even going as far as encoding each block multiple
+times, and using the statistics from the previous try to pick the costs for the
+current iteration.  For now, we will take the easiest approach, and pick a
+reasonable distribution for our costs.
+
+This relatively simple algorithm provides a big compression win, from 36.6% to
+34.5%.  It is substantially slower to compress, but there is plenty of room for
+optimization in a more complex implementation.
+~~~ none
+Optimal: 100000000 -> 34566497 (34.5%)
+17.26 seconds, 5.52 MB/s
+0.56 seconds, 171.80 MB/s
+~~~
+
 !!! NOTE LZ Optimal Parsing
    Charles Bloom has a great series of posts where he talks about LZ Parsing
    in depth.  I've ordered them from newest to oldest:
@@ -1049,55 +1132,128 @@ Definitely not optimal, but it gets us started!
    - [LZ Optimal Parse with A*](http://cbloomrants.blogspot.com/2011/10/10-24-11-lz-optimal-parse-with-star.html)
    - [On LZ Optimal Parsing](http://cbloomrants.blogspot.com/2008/10/10-10-08-7_10.html)
 
+~~~ c++
+void LzEncoder::optimalParse(uint8_t* buffer, int64_t p, int64_t p_end) {
+  int64_t length = p_end - p;
+  std::vector<int> price(length + 1, 999999999);
+  std::vector<int> len(length + 1, 0);
+  std::vector<int> dist(length + 1, 0);
+
+  price[0] = 0;
+  ...
+~~~
+First, we set up the buffers we need - `price` holds the cost of encoding up to
+the given offset.  `len` and `dist` hold the sequence that got us there.
+
+~~~ c++
+  ...
+  // Forward pass, calculate best price for literal or match at each position.
+  for (int64_t i = 0; i < length; ++i) {
+    int lit_cost = price[i] + literal_price(buffer[i]);
+    if (lit_cost < price[i + 1]) {
+      price[i + 1] = lit_cost;
+      len[i + 1] = 1;
+      dist[i + 1] = 0;
+    }
+
+    // Don't try matches close to end of buffer.
+    if (i + 4 >= length) {
+      continue;
+    }
+
+    int64_t match_dist[16], match_len[16];
+    int matches = matcher_.findMatches(buffer, buffer + p_end, p + i, match_dist, match_len);
+    for (int j = 0; j < matches; ++j) {
+      int match_cost = price[i] + match_price(match_len[j], match_dist[j]);
+      if (match_cost < price[i+ match_len[j]]) {
+        price[i + match_len[j]] = match_cost;
+        len[i + match_len[j]] = match_len[j];
+        dist[i + match_len[j]] = match_dist[j];
+      }
+    }
+  }
+  ...
+~~~
+Then, we compute the cost for encoding a literal, or one of the best matches
+that we found.  If that cost is better than the previous cost for reaching the
+given byte, we use the new one.
+
+For our costs, we will use some simple heuristics, that came from me dumping
+the statistics over some example files.  `dist_cost` looks a little strange, it
+should really be `log2(dist) * 2`, however, I found the given version performs
+significantly better.  A minor mystery.
+~~~ c++
+int literal_price(int c) {
+  return 6;
+}
+
+int match_price(int len, int dist) {
+  int len_cost = 6 + log2(len);
+  int dist_cost = std::max(0, log2(dist) - 3);
+  return len_cost + dist_cost;
+}
+~~~
+
+Now, we do the backward pass, building up the sequences.  If we see `len[i] >
+1`, we know it was a match, otherwise it's a literal.
+~~~ c++
+ ...
+  // Backward pass, pick best option at each step.
+  if (len[length] <= 1) {
+    match_offsets_[num_seq_] = 0;
+    match_lengths_[num_seq_] = 0;
+    literal_lengths_[num_seq_] = 0;
+    ++num_seq_;
+  }
+  for (int64_t i = length; i > 0;) {
+    if (len[i] > 1) {
+      match_offsets_[num_seq_] = dist[i];
+      match_lengths_[num_seq_] = len[i];
+      literal_lengths_[num_seq_] = 0;
+      ++num_seq_;
+      i -= len[i];
+    } else {
+      literals_[num_lit_++] = buffer[p + i - 1];
+      ++literal_lengths_[num_seq_ - 1];
+      --i;
+    }
+  }
+  ...
+~~~
+
+And a final step, since we wrote the arrays in reverse order:
+~~~
+  ...
+  // We wrote the arrays in reverse, flip them for uniformity.
+  std::reverse(&literal_lengths_[0], &literal_lengths_[num_seq_]);
+  std::reverse(&match_offsets_[0], &match_offsets_[num_seq_]);
+  std::reverse(&match_lengths_[0], &match_lengths_[num_seq_]);
+  std::reverse(&literals_[0], &literals_[num_lit_]);
+}
+~~~
+
+## Writing LZ Blocks
+
 Let's walk through the structure of the main compression loop:
 ~~~ c++
 // Compresses `buffer` from `buffer+p` to `buffer+p_end`.
-// Writes compressed sequence to `out`.  `out` must contain at least `window_size` bytes!
+// Writes compressed sequence to `out`.
 // Returns number of bytes written to `out`.
 int64_t LzEncoder::encode(uint8_t* buffer, int64_t p, int64_t p_end, uint8_t* out) {
-  std::vector<int> match_offsets;
-  std::vector<int> match_lengths;
-  std::vector<int> literal_lengths;
-  std::vector<uint8_t> literals;
-  ...
-~~~
-Here, we just set up the arrays that will contain our (lit_len, match_offset, match_len) tuples, and the actual
-literals themselves.
-
-~~~ c++
-  ...
   uint8_t* out_start = out;
-  int num_literals = 0;
 
-  for (int64_t i = p; i < p_end; ++i) {
-    // Output a match?  Or a literal?
-    int64_t match_pos;
-    int match_len = matcher_.findMatch(buffer, buffer + p_end, i, match_pos);
-    if (match_len != 0 && i < p_end - 4) {
-      match_offsets.push_back(i - match_pos);
-      match_lengths.push_back(match_len);
-      literal_lengths.push_back(num_literals);
-      num_literals = 0;
+  num_seq_ = 0;
+  num_lit_ = 0;
 
-      while (--match_len > 0) {
-        matcher_.insert(buffer, ++i);
-      }
-    } else {
-      literals.push_back(buffer[i]);
-      ++num_literals;
-    }
-  }
-  if (num_literals != 0) {
-    literal_lengths.push_back(num_literals);
-    match_offsets.push_back(0);
-    match_lengths.push_back(0);
+  if (level_ == 0) {
+    fastParse(buffer, p, p_end);
+  } else if (level_ == 1) {
+    optimalParse(buffer, p, p_end);
   }
   ...
 ~~~
-Here is the main part of the compression loop.  It's actually quite straightforward.  For each
-byte in the input, we check if we have a match.  If there is one, we use it, otherwise we add
-a literal to our buffer.  That's it!  One important part is making sure we insert the match
-substrings into the Hash-Chain, otherwise we lose a lot of potential matching opportunities.
+Here, we execute either a `fastParse` or `optimalParse`, depending on the level
+requested by the user.
 
 Next up, we write out our Huffman compressed literals:
 ~~~ c++
@@ -1105,7 +1261,7 @@ Next up, we write out our Huffman compressed literals:
   // Write literal section
   {
     // Uncompressed length
-    writeInt<3>(out, literals.size());
+    writeInt<3>(out, num_lit_);
     out += 3;
     // Compressed length
     uint8_t* marker = out;
@@ -1113,17 +1269,17 @@ Next up, we write out our Huffman compressed literals:
 
     // Huffman table for literals
     HuffmanEncoder encoder(out);
-    for (uint8_t literal : literals) {
-      encoder.scan(literal);
+    for (int i = 0; i < num_lit_; ++i) {
+      encoder.scan(literals_[i]);
     }
     encoder.buildTable();
-    for (uint8_t literal : literals) {
-      encoder.encode(literal);
+    for (int i = 0; i < num_lit_; ++i) {
+      encoder.encode(literals_[i]);
     }
     int64_t bytes_written = encoder.finish();
     out += bytes_written;
     writeInt<3>(marker, bytes_written);
-    LOGV(1, "literals: %lu -> %lld\n", literals.size(), bytes_written);
+    LOGV(1, "literals: %d -> %lld\n", num_lit_, bytes_written);
   }
   ...
 ~~~
@@ -1131,18 +1287,18 @@ Next up, we write out our Huffman compressed literals:
 And, last, we write out our match sequences:
 ~~~ c++
   ...
-    // Write sequences section
-  writeInt<3>(out, literal_lengths.size());
+  // Write sequences section
+  writeInt<3>(out, num_seq_);
   out += 3;
 
   // a. Literal lengths
-  int lit_len_out = writeValues(out, literal_lengths);
+  int lit_len_out = writeValues<false>(out, literal_lengths_);
   out += lit_len_out;
   // b. Match offsets
-  int match_offsets_out = writeValues(out, match_offsets);
+  int match_offsets_out = writeValues<true>(out, match_offsets_);
   out += match_offsets_out;
   // c. Match lengths
-  int match_lengths_out = writeValues(out, match_lengths);
+  int match_lengths_out = writeValues<false>(out, match_lengths_);
   out += match_lengths_out;
 
   return out - out_start;
@@ -1153,17 +1309,21 @@ The implementation of `writeValues` is straightforward, although note that we
 tell the Huffman encoder we only need a maximum of 32 symbols, so it can be
 significantly smaller.
 ~~~ c++
-int64_t LzEncoder::writeValues(uint8_t* out, const std::vector<int>& values) {
+template< bool is_offset >
+int64_t LzEncoder::writeValues(uint8_t* out, const int* values) {
   HuffmanEncoder encoder(out, 32);
-  for (int v : values) {
-    encoder.scan(literalLengthCode(v));
+  for (int i = 0; i < num_seq_; ++i) {
+    encoder.scan(is_offset ? offsetCode(values[i]) : lengthCode(values[i]));
   }
   encoder.buildTable();
-  for (int v : values) {
-    encoder.encode(literalLengthCode(v));
-    LOGV(3, "Encoding %d -> %d (%d, %d)\n", v, literalLengthCode(v), log2(v), literalLengthExtra(v));
-    if (v >= 16) {
-      int extra = literalLengthExtra(v);
+  for (int i = 0; i < num_seq_; ++i) {
+    int v = values[i];
+    encoder.encode(is_offset ? offsetCode(v) : lengthCode(v));
+    LOGV(3, "Encoding %d -> %d (%d, %d)\n",
+         v, is_offset ? offsetCode(v) : lengthCode(v), log2(v),
+         is_offset ? offsetExtra(v) : lengthExtra(v));
+    if (v >= (is_offset ? 2 : 16)) {
+      int extra = is_offset ? offsetExtra(v) : lengthExtra(v);
       encoder.writer().writeBits(extra, log2(v));
     }
   }
@@ -1184,54 +1344,52 @@ The whole decode process is very straightforward.  First, we Huffman decompress
 the literals and sequences, then we execute the sequences.  Executing the
 sequences is just copying bytes around:
 ~~~ c++
-  uint8_t* l_head = literals;
-  for (int i = 0; i < num_seq; ++i) {
-    for (int j = 0; j < literal_lengths[i]; ++j) {
-      *out++ = *l_head++;
-    }
-    uint8_t* match_base = out - match_offsets[i];
-    for (int j = 0; j < match_lengths[i]; ++j) {
-      *out++ = match_base[j];
-    }
+uint8_t* l_head = literals;
+for (int i = 0; i < num_seq; ++i) {
+  for (int j = 0; j < literal_lengths[i]; ++j) {
+    *out++ = *l_head++;
   }
+  uint8_t* match_base = out - match_offsets[i];
+  for (int j = 0; j < match_lengths[i]; ++j) {
+    *out++ = match_base[j];
+  }
+}
 ~~~
 
 Decoding the sequences is also very straightforward:
 ~~~ c++
-  uint8_t literals[1 << 18];
-  int literal_lengths[1 << 16];
-  int match_offsets[1 << 16];
-  int match_lengths[1 << 16];
+uint8_t literals[1 << 18];
+int literal_lengths[1 << 16];
+int match_offsets[1 << 16];
+int match_lengths[1 << 16];
 
-  {
-    int num_literals = readInt<3>(buf);
-    int compressed_size = readInt<3>(buf + 3);
-    buf += 6;
-    LOGV(1, "Read %d literals, %d compressed bytes\n", num_literals, compressed_size);
+{
+  int num_literals = readInt<3>(buf);
+  int compressed_size = readInt<3>(buf + 3);
+  buf += 6;
 
-    HuffmanDecoder decoder(buf, buf + compressed_size);
-    decoder.readTable();
-    decoder.decode(literals, literals + num_literals);
-    buf += compressed_size;
-  }
+  HuffmanDecoder decoder(buf, buf + compressed_size);
+  decoder.readTable();
+  decoder.decode(literals, literals + num_literals);
+  buf += compressed_size;
+}
 
-  int num_seq = readInt<3>(buf);
-  buf += 3;
-  LOGV(1, "Read %d sequences\n", num_seq);
+int num_seq = readInt<3>(buf);
+buf += 3;
+LOGV(1, "Read %d sequences\n", num_seq);
 
-  buf += decodeValues(buf, end, num_seq, literal_lengths);
-  buf += decodeValues(buf, end, num_seq, match_offsets);
-  buf += decodeValues(buf, end, num_seq, match_lengths);
+buf += decodeValues(buf, end, num_seq, literal_lengths);
+buf += decodeValues(buf, end, num_seq, match_offsets);
+buf += decodeValues(buf, end, num_seq, match_lengths);
 ~~~
+And that's it!
 
 Summary
 =======
 
-The [code]](https://github.com/glinscott/linzip2/blob/master/main.cc)
+The [code](https://github.com/glinscott/linzip2/blob/master/main.cc)
 implements the ideas covered in this article.  It's less than 1000 lines of
-code, and I tried to find a good balance between speed and clarity.  We  left
-off before implementing LZ Optimal Parsing, which will make a huge difference
-in compression ratio, but that is for another day.
+code, and I tried to find a good balance between speed and clarity.
 
 Huge thanks to folks like Charles Bloom, Yann Collet and Fabien Giesen for
 posting their work online.  Without their contributions, the field of
